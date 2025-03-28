@@ -4,13 +4,18 @@ import os
 from datetime import datetime, timedelta
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+import flask_server
+
+flask_server.start_flask()
 
 load_dotenv()
 TOKEN = os.getenv("T")
 
-CATEGORY_ID = 1348928375082848
+CATEGORY_ID = 1348928375082848306
 JSON_FILE = "slots.json"
-YOUR_GUILD_ID = 1298020437560660
+YOUR_GUILD_ID = 1298020437560660028
+SLOT_ROLE_ID = 1349150332713832549
+
 
 intents = discord.Intents.all()
 
@@ -25,6 +30,7 @@ def load_slots():
 def save_slots(data):
     with open(JSON_FILE, "w") as f:
         json.dump(data, f, indent=4)
+
 
 async def is_admin(ctx):
     return ctx.user.guild_permissions.administrator
@@ -45,9 +51,17 @@ async def check_expirations():
 
         if expire_time - now < timedelta(hours=24) and not slot.get("warned", False):
             await channel.send("⚠️ Acest slot va expira în mai puțin de 24 de ore!")
-            slot["warned"] = True  
+            slot["warned"] = True
 
         if now >= expire_time:
+            guild = bot.get_guild(YOUR_GUILD_ID)
+            user = guild.get_member(int(slot["owner"]))
+            role = guild.get_role(SLOT_ROLE_ID)
+            if user and role:
+                try:
+                    await user.remove_roles(role)
+                except discord.Forbidden:
+                    print(f"Nu am permisiunea de a elimina rolul {role.name} de la {user.name}")
             await channel.delete()
             to_delete.append(channel_id)
 
@@ -55,6 +69,7 @@ async def check_expirations():
         del data["slots"][channel_id]
 
     save_slots(data)
+
 
 @bot.event
 async def on_ready():
@@ -68,23 +83,21 @@ async def on_ready():
 
     check_expirations.start()
     await bot.tree.sync()
-    
 @bot.tree.command(name="addslot", description="Adaugă un slot nou")
 async def addslot(interaction: discord.Interaction, user: discord.User, days: int):
     if not await is_admin(interaction):
         await interaction.response.send_message("❌ Doar administratorii serverului pot folosi această comandă!", ephemeral=True)
         return
 
-    
     category = bot.get_channel(CATEGORY_ID)
     if not category:
         await interaction.response.send_message("❌ Categoria nu a fost găsită!", ephemeral=True)
         return
     overwrites = {
-    interaction.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
-    user: discord.PermissionOverwrite(read_messages=True, send_messages=True, mention_everyone=False),
-    interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, mention_everyone=True)
-}
+        interaction.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False), 
+        user: discord.PermissionOverwrite(read_messages=True, send_messages=True, mention_everyone=False),
+        interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, mention_everyone=True)
+    }
 
     channel = await category.create_text_channel(name=user.name, overwrites=overwrites)
     expires_at = datetime.utcnow() + timedelta(days=days)
@@ -96,11 +109,20 @@ async def addslot(interaction: discord.Interaction, user: discord.User, days: in
         "warned": False,
         "warnings": 0,
         "paused": False,
-        "last_used": None
+        "last_used": None 
     }
     save_slots(data)
 
-    await interaction.response.send_message(f"✅ Slotul **{channel.name}** a fost creat și va expira în {days} zile.")
+    guild = bot.get_guild(YOUR_GUILD_ID)
+    role = guild.get_role(SLOT_ROLE_ID)
+    if role:
+        try:
+            await user.add_roles(role)
+        except discord.Forbidden:
+            await interaction.response.send_message(f"❌ Nu am permisiunea de a adăuga rolul {role.name} utilizatorului.", ephemeral=True)
+            return
+
+    await interaction.response.send_message(f"✅ Slotul **{channel.name}** a fost creat și va expira în {days} zile. Rolul a fost adăugat utilizatorului.")
     await channel.send(f"✅ Acest slot va expira pe {expires_at.strftime('%Y-%m-%d %H:%M:%S')} UTC.")
 
 @bot.tree.command(name="send_alert", description="Trimite o alertă @everyone sau @here")
@@ -239,16 +261,28 @@ async def rslot(interaction: discord.Interaction, channel: discord.TextChannel):
         return
 
     data = load_slots()
-    
+
     if str(channel.id) not in data["slots"]:
         await interaction.response.send_message("❌ Acest canal nu este un slot valid.", ephemeral=True)
         return
+
+    slot = data["slots"][str(channel.id)]
+    guild = bot.get_guild(YOUR_GUILD_ID)
+    user = guild.get_member(int(slot["owner"]))
+    role = guild.get_role(SLOT_ROLE_ID)
+
+    if user and role:
+        try:
+            await user.remove_roles(role)
+        except discord.Forbidden:
+            await interaction.response.send_message(f"❌ Nu am permisiunea de a elimina rolul {role.name} de la {user.name}.", ephemeral=True)
+            return
 
     await channel.delete()
     del data["slots"][str(channel.id)]
     save_slots(data)
 
-    await interaction.response.send_message(f"✅ Slotul **{channel.name}** a fost șters.")
+    await interaction.response.send_message(f"✅ Slotul **{channel.name}** a fost șters și rolul utilizatorului a fost eliminat.")
 
 @bot.tree.command(name="aslot", description="Trimite un mesaj de avertizare într-un slot")
 async def aslot(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -275,4 +309,54 @@ async def aslot(interaction: discord.Interaction, channel: discord.TextChannel):
     await channel.send(embed=embed)
     await interaction.response.send_message(f"✅ Mesajul de avertizare a fost trimis în **{channel.name}**.", ephemeral=True)
     
+@bot.tree.command(name="help", description="Afișează lista de comenzi disponibile")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Lista de comenzi disponibile",
+        description="Iată o listă cu toate comenzile pe care le poți folosi:",
+        color=discord.Color.green()
+    )
+
+    commands_list = [
+        {"name": "addslot", "description": "Adaugă un slot nou pentru un utilizator."},
+        {"name": "send_alert", "description": "Trimite o alertă @everyone sau @here într-un slot."},
+        {"name": "dslot", "description": "Afișează detaliile unui slot."},
+        {"name": "wslot", "description": "Avertizează un slot."},
+        {"name": "pslot", "description": "Pune un slot pe pauză pentru verificare."},
+        {"name": "eslot", "description": "Prelungește timpul unui slot."},
+        {"name": "rslot", "description": "Șterge un slot manual."},
+        {"name": "aslot", "description": "Trimite un mesaj de avertizare într-un slot."},
+         {"name": "unpslot", "description": "Scoate de pe pauza un slot."},
+        {"name": "help", "description": "Afișează această listă de comenzi."}
+    ]
+
+    for cmd in commands_list:
+        embed.add_field(name=f"/{cmd['name']}", value=cmd['description'], inline=False)
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="unpslot", description="Scoate un slot de pe pauză")
+async def unpslot(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await is_admin(interaction):
+        await interaction.response.send_message("❌ Doar administratorii serverului pot scoate slotul de pe pauză!", ephemeral=True)
+        return
+
+    data = load_slots()
+    slot = data["slots"].get(str(channel.id))
+
+    if not slot:
+        await interaction.response.send_message("❌ Acest canal nu este un slot valid.", ephemeral=True)
+        return
+
+    if not slot["paused"]:
+        await interaction.response.send_message("❌ Acest slot nu este pe pauză!", ephemeral=True)
+        return
+
+    await channel.set_permissions(interaction.guild.default_role, send_messages=True)
+    slot["paused"] = False
+    save_slots(data)
+
+    await channel.send("✅ Acest slot a fost scos de pe pauză.")
+    await interaction.response.send_message(f"✅ Slotul **{channel.name}** a fost scos de pe pauză.")  
+            
 bot.run(TOKEN)
