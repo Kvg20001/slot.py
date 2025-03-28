@@ -4,9 +4,6 @@ import os
 from datetime import datetime, timedelta
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
-import flask_server
-
-flask_server.start_flask()
 
 load_dotenv()
 TOKEN = os.getenv("T")
